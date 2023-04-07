@@ -12,6 +12,8 @@ USBポートにRL7023 Stick-D/IPSやUSBシリアル変換器につないだP35A1
 https://ak1211.github.io/smartmeter-route-b-app/
 にアクセスしてその内容にしたがってください。
 
+このページ https://zenn.dev/akihiro_ya/articles/0df610e514a9f9 でも説明しています。
+
 ## License
 Licensed under the MIT License.  
 See LICENSE file in the project root for full license information.
