@@ -12,6 +12,7 @@ module Terminal
 
 import Prelude
 import Bp35a1 as Bp35a1
+import Control.Alt ((<|>))
 import Control.Monad.Rec.Class (Step(..), tailRecM)
 import Data.Array as Array
 import Data.ArrayBuffer.Builder (putArrayBuffer, putUint8)
@@ -19,20 +20,25 @@ import Data.ArrayBuffer.Builder as Builder
 import Data.ArrayBuffer.Typed as ArrayBufferTyped
 import Data.ArrayBuffer.Types (ArrayBuffer, Uint8Array)
 import Data.Char as Char
-import Data.CodePoint.Unicode (isPrint)
+import Data.CodePoint.Unicode as Unicode
 import Data.DateTime.Instant (Instant)
 import Data.Either (Either(..))
+import Data.Enum as Enum
 import Data.Foldable (foldM)
+import Data.Int as Int
 import Data.List (List, (:))
 import Data.List as List
 import Data.Maybe (Maybe(..), maybe)
 import Data.Maybe as Maybe
 import Data.MediaType (MediaType(..))
 import Data.String (CodePoint, joinWith)
+import Data.String as CodePoint
 import Data.String as String
+import Data.String.CodeUnits as CodeUnits
 import Data.Traversable (traverse_)
 import Data.UInt (UInt)
 import Data.UInt as UInt
+import EchonetLite (stringWithZeroPadding)
 import Effect (Effect)
 import Effect.Aff (Aff, Fiber)
 import Effect.Aff as Aff
@@ -50,8 +56,10 @@ import Halogen.HTML.Properties as HP
 import Halogen.Query.HalogenM (SubscriptionId)
 import Halogen.Subscription as HS
 import Halogen.Themes.Bootstrap5 as HB
+import Parsing as P
+import Parsing.String as PString
+import Parsing.Token as PToken
 import Web.Encoding.TextDecoder as TextDecoder
-import Web.Encoding.TextEncoder as TextEncoder
 import Web.Encoding.UtfLabel as UtfLabel
 import Web.File.Blob as FB
 import Web.File.Url as FU
@@ -222,16 +230,22 @@ handleAction = case _ of
     H.unsubscribe sid
   OnValueInputFormInputArea inputText -> H.modify_ _ { commandlineText = inputText }
   OnClickFormSendButton -> do
-    (st :: State) <- H.get
-    H.liftEffect $ log ("SEND: " <> st.commandlineText)
     now <- H.liftEffect $ Now.now
+    (st :: State) <- H.get
     case st.maybeSerialport of
       Nothing -> H.raise $ MessageError { at: now, error: Exc.error "シリアルポートが閉じています。" }
-      Just serialport -> do
-        H.liftEffect $ writeSerialPortText serialport (st.commandlineText <> "\r\n")
-        let
-          newHistories = { at: now, sendText: st.commandlineText } : st.txHistories
-        H.modify_ _ { commandlineText = "", txHistories = newHistories }
+      Just serialport -> case encodeToUIntArrayFromAsciiCodes (st.commandlineText <> "\r\n") of
+        Left err -> do
+          H.liftEffect $ log ("PARSE ERROR " <> P.parseErrorMessage err)
+          H.raise $ MessageError { at: now, error: Exc.error ("不正な文字があります: " <> P.parseErrorMessage err) }
+        Right encodedcommand -> do
+          let
+            text = decodeToStringFromArrayUInt encodedcommand
+          H.liftEffect $ log ("SEND: " <> Maybe.fromMaybe "" text)
+          H.liftEffect $ writeBinaryToSerialPort serialport encodedcommand
+          let
+            newHistories = { at: now, sendText: st.commandlineText } : st.txHistories
+          H.modify_ _ { commandlineText = "", txHistories = newHistories }
   HandleInput Nothing -> mempty
   HandleInput (Just newText) -> do
     currentText <- H.gets _.commandlineText
@@ -315,23 +329,23 @@ handleQuery = case _ of
     when (currentText /= newText)
       $ H.modify_ _ { commandlineText = newText }
     pure (Just next)
-  SendCommand array next -> do
+  SendCommand array next ->
     let
-      chars :: Array Char
-      chars = Array.concatMap (Array.fromFoldable <<< Char.fromCharCode <<< UInt.toInt) array
+      fail = do
+        now <- H.liftEffect $ Now.now
+        H.raise $ MessageError { at: now, error: Exc.error "シリアルポートが閉じています。" }
 
-      printableCodePoints :: Array CodePoint
-      printableCodePoints = Array.filter isPrint $ map String.codePointFromChar chars
+      go serialport = H.liftEffect $ writeBinaryToSerialPort serialport array
 
-      printableText = joinWith "" $ map String.singleton printableCodePoints
-    H.liftEffect $ log ("SENDCOMMAND: " <> printableText)
-    (st :: State) <- H.get
-    now <- H.liftEffect $ Now.now
-    case st.maybeSerialport of
-      Nothing -> H.raise $ MessageError { at: now, error: Exc.error "シリアルポートが閉じています。" }
-      Just serialport -> do
-        H.liftEffect $ writeSerialPortBinary serialport array
-    pure (Just next)
+      text = show array
+
+      text' = Maybe.fromMaybe "" $ decodeToStringFromArrayUInt array
+    in
+      do
+        H.liftEffect $ log ("SENDCOMMAND: " <> text)
+        H.liftEffect $ log ("SENDCOMMAND: " <> text')
+        maybe fail go =<< H.gets _.maybeSerialport
+        pure (Just next)
   IsOpenedSerialPort k -> do
     (opened :: Boolean) <- Maybe.isJust <$> H.gets _.maybeSerialport
     pure (Just (k opened))
@@ -384,26 +398,75 @@ runReadSerialPortThread serialport = do
         WebSerialApi.Closed -> pure (Done unit)
         WebSerialApi.Chunk _ -> pure (Loop unit)
 
-writeSerialPortText :: WebSerialApi.SerialPort -> String -> Effect Unit
-writeSerialPortText serialport text = do
-  bytearray <- encode text
-  writer <- WebSerialApi.getWriter serialport
-  Aff.launchAff_ $ Aff.finally (release writer) $ WebSerialApi.write writer bytearray
+decodeToStringFromArrayUInt :: Array UInt -> Maybe String
+decodeToStringFromArrayUInt input = do
+  cs <- toCodePoints input
+  Just (joinWith "" $ map mapping cs)
   where
-  release writer = liftEffect $ WebSerialApi.releaseLockWriter writer
+  toCodePoints :: Array UInt -> Maybe (Array CodePoint)
+  toCodePoints xs =
+    let
+      maybeChars :: Array (Maybe Char)
+      maybeChars = map (Char.fromCharCode <<< UInt.toInt) xs
+    in
+      if Array.all Maybe.isJust maybeChars then
+        Just (map String.codePointFromChar $ Array.catMaybes maybeChars)
+      else
+        Nothing
 
-  encode str = do
-    encoder <- TextEncoder.new
-    pure $ TextEncoder.encode str encoder
+  mapping :: CodePoint -> String
+  mapping c
+    | c == CodePoint.codePointFromChar '\r' = "\\r"
+    | c == CodePoint.codePointFromChar '\n' = "\\n"
+    | Unicode.isAscii c && Unicode.isPrint c = String.singleton c
+    | otherwise =
+      let
+        n = Enum.fromEnum c
+      in
+        "\\x" <> stringWithZeroPadding 2 (Int.toStringAs Int.hexadecimal n)
 
-writeSerialPortBinary :: WebSerialApi.SerialPort -> Array UInt -> Effect Unit
-writeSerialPortBinary serialport arr = do
-  buf <- Builder.execPut $ foldM (\_ x -> putUint8 x) mempty arr
-  binary <- ArrayBufferTyped.whole buf
-  writer <- WebSerialApi.getWriter serialport
-  Aff.launchAff_ $ Aff.finally (release writer) $ WebSerialApi.write writer binary
+encodeToUIntArrayFromAsciiCodes :: String -> Either P.ParseError (Array UInt)
+encodeToUIntArrayFromAsciiCodes input =
+  P.runParser input do
+    as <- Array.many (hexedCode <|> anyCharacter)
+    pure as
   where
-  release writer = liftEffect $ WebSerialApi.releaseLockWriter writer
+  anyCharacter :: forall m. P.ParserT String m UInt
+  anyCharacter = do
+    c <- PString.anyChar
+    pure (UInt.fromInt $ Char.toCharCode c)
+
+  hexedCode :: forall m. P.ParserT String m UInt
+  hexedCode = do
+    hexed <- PString.string "\\x" *> Array.many PToken.hexDigit
+    let
+      cs :: String
+      cs = CodeUnits.fromCharArray hexed
+
+      maybeUI :: Maybe UInt
+      maybeUI = UInt.fromInt <$> Int.fromStringAs Int.hexadecimal cs
+    maybe (P.fail "code conversion failed.") pure maybeUI
+
+writeBinaryToSerialPort :: WebSerialApi.SerialPort -> Array UInt -> Effect Unit
+writeBinaryToSerialPort serialport array =
+  toUint8Array array
+    >>= writeUint8ArrayToSerialPort serialport
+  where
+  toUint8Array :: Array UInt -> Effect Uint8Array
+  toUint8Array = ArrayBufferTyped.whole <=< createArrayBuffer
+
+writeUint8ArrayToSerialPort :: WebSerialApi.SerialPort -> Uint8Array -> Effect Unit
+writeUint8ArrayToSerialPort serialport array = do
+  writer <- WebSerialApi.getWriter serialport
+  let
+    toRelease :: Aff Unit
+    toRelease = liftEffect $ WebSerialApi.releaseLockWriter writer
+  Aff.launchAff_ $ Aff.finally toRelease $ WebSerialApi.write writer array
+
+createArrayBuffer :: Array UInt -> Effect ArrayBuffer
+createArrayBuffer array =
+  Builder.execPut do
+    foldM (\_ x -> putUint8 x) mempty array
 
 emitRequestIdleCallback :: Action -> HS.Emitter Action
 emitRequestIdleCallback val = HS.makeEmitter go
