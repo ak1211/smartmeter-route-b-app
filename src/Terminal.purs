@@ -438,7 +438,7 @@ encodeToUIntArrayFromAsciiCodes input =
 
   hexedCode :: forall m. P.ParserT String m UInt
   hexedCode = do
-    hexed <- PString.string "\\x" *> Array.many PToken.hexDigit
+    hexed <- (PString.string "\\x" <|> PString.string "\\\\x") *> Array.many PToken.hexDigit
     let
       cs :: String
       cs = CodeUnits.fromCharArray hexed
