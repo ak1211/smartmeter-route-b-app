@@ -87,7 +87,7 @@ type State
     }
 
 data Query a
-  = OpenSerialPort a
+  = OpenSerialPort Int a
   | CloseSerialPort a
   | SetCommandLineString String a
   | SendCommand (Array UInt) a
@@ -319,8 +319,9 @@ splitSingleLine buf =
 
 handleQuery :: forall input m a. MonadAff m => Query a -> H.HalogenM State Action input Output m (Maybe a)
 handleQuery = case _ of
-  OpenSerialPort next -> do
-    openSerialPort
+  OpenSerialPort boudrate next -> do
+    H.liftEffect $ logShow $ "boudrate: " <> Int.toStringAs Int.decimal boudrate
+    openSerialPort boudrate
     pure (Just next)
   CloseSerialPort next -> do
     closeSerialPort
@@ -351,17 +352,21 @@ handleQuery = case _ of
     (opened :: Boolean) <- Maybe.isJust <$> H.gets _.maybeSerialport
     pure (Just (k opened))
 
-openSerialPort :: forall input output m. MonadEffect m => MonadAff m => H.HalogenM State Action input output m Unit
-openSerialPort = do
+openSerialPort :: forall input output m. MonadEffect m => MonadAff m => Int -> H.HalogenM State Action input output m Unit
+openSerialPort boudrate = do
   { emitter, listener } <- H.liftEffect HS.create
   sid <- H.subscribe emitter
   H.liftEffect $ Aff.runAff_ (callback listener sid) open
   where
   open :: Aff WebSerialApi.SerialPort
-  open = do
-    port <- WebSerialApi.requestPort
-    WebSerialApi.openPort port WebSerialApi.defaultOpenPortOption
-    pure port
+  open =
+    let
+      option = WebSerialApi.defaultOpenPortOption { baudRate = boudrate }
+    in
+      do
+        port <- WebSerialApi.requestPort
+        WebSerialApi.openPort port option
+        pure port
 
   callback listener sid x = H.liftEffect $ HS.notify listener (HandleSerialPortOpen sid x)
 

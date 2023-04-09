@@ -84,6 +84,7 @@ type State
     , instant :: Instant
     , availableWebSerialApi :: Boolean
     , serialportOpened :: Boolean
+    , boudRate :: Int
     , toastMessages :: Array (Tuple Boolean ToastMessage)
     , maybeEpandesc :: Maybe Bp35a1.EPANDESC
     , maybeIpV6Address :: Maybe Bp35a1.IpV6Address
@@ -93,6 +94,7 @@ data Action
   = Initialize
   | Finalize
   | Tick
+  | OnValueChangeBoudRateOption String
   | OnClickOpenPortButton
   | OnClickClosePortButton
   | OnClickSetCommandLineButton String
@@ -120,6 +122,7 @@ initialState _ =
   , instant: unsafePerformEffect $ Now.now
   , availableWebSerialApi: false
   , serialportOpened: false
+  , boudRate: 115200
   , toastMessages: []
   , maybeEpandesc: Nothing
   , maybeIpV6Address: Nothing
@@ -230,7 +233,24 @@ render state =
             , HH.text "このボタンを押してシリアルポートを開きます。"
             ]
         , HH.div [ HP.class_ HB.m3 ]
-            [ HH.button
+            [ let
+                strBoudRate = Int.toStringAs Int.decimal state.boudRate
+
+                option s =
+                  HH.option [ HP.value s, HP.selected $ s == strBoudRate ]
+                    [ HH.text (s <> " bps") ]
+              in
+                HH.select
+                  [ HP.classes [ HB.formSelectSm ]
+                  , HE.onValueChange OnValueChangeBoudRateOption
+                  ]
+                  [ option "9600"
+                  , option "19200"
+                  , option "38400"
+                  , option "57600"
+                  , option "115200"
+                  ]
+            , HH.button
                 [ HP.classes
                     $ Array.concat
                         [ [ HB.m1, HB.btn ]
@@ -699,7 +719,13 @@ handleAction = case _ of
   Tick -> do
     instant <- H.liftEffect Now.now
     H.modify_ _ { instant = instant }
-  OnClickOpenPortButton -> H.tell _terminal unit Terminal.OpenSerialPort
+  OnValueChangeBoudRateOption strBoudrate -> case Int.fromString strBoudrate of
+    Nothing -> H.liftEffect $ logShow ("set option error: " <> strBoudrate)
+    Just x -> do
+      H.modify_ _ { boudRate = x }
+  OnClickOpenPortButton -> do
+    boudrate <- H.gets _.boudRate
+    H.tell _terminal unit (Terminal.OpenSerialPort boudrate)
   OnClickClosePortButton -> H.tell _terminal unit Terminal.CloseSerialPort
   OnClickSetCommandLineButton s -> H.tell _terminal unit (Terminal.SetCommandLineString s)
   OnClickToastHideButton item ->
