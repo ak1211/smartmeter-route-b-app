@@ -243,6 +243,7 @@ render state =
                 HH.select
                   [ HP.classes [ HB.formSelectSm ]
                   , HE.onValueChange OnValueChangeBoudRateOption
+                  , HP.disabled state.serialportOpened
                   ]
                   [ option "9600"
                   , option "19200"
