@@ -241,6 +241,7 @@ handleAction = case _ of
         Right encodedcommand -> do
           let
             text = decodeToStringFromArrayUInt encodedcommand
+          H.liftEffect $ log ("SEND: " <> show encodedcommand)
           H.liftEffect $ log ("SEND: " <> Maybe.fromMaybe "" text)
           H.liftEffect $ writeBinaryToSerialPort serialport encodedcommand
           let
@@ -438,7 +439,7 @@ encodeToUIntArrayFromAsciiCodes input =
 
   hexedCode :: forall m. P.ParserT String m UInt
   hexedCode = do
-    hexed <- (PString.string "\\x" <|> PString.string "\\\\x") *> Array.many PToken.hexDigit
+    hexed <- (PString.string "\\\\x" <|> PString.string "\\x") *> Array.many PToken.hexDigit
     let
       cs :: String
       cs = CodeUnits.fromCharArray hexed
