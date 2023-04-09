@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "description": "スマートメーターのルート BをテストするＷｅｂアプリケーション ",
   "scripts": {
-    "build": "spago bundle-app"
+    "build": "spago bundle-app",
+    "serve": "live-server"
   },
   "devDependencies": {
     "purescript": "^0.15.8",
