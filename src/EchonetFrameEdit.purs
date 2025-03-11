@@ -11,16 +11,12 @@ module EchonetFrameEdit
   ) where
 
 import Prelude
-import Data.Array as Array
 import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Array.NonEmpty as NonEmptyArray
 import Data.ArrayBuffer.Types (ArrayBuffer)
-import Data.Char as Char
 import Data.Int as Int
 import Data.Maybe (Maybe(..))
-import Data.Maybe as Maybe
 import Data.String as String
-import Data.String.Unsafe as StringUnsafe
 import Data.UInt (UInt)
 import Data.UInt as UInt
 import EchonetLite (ESV(..), EDatum, stringWithZeroPadding)
@@ -33,7 +29,6 @@ import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Halogen.Themes.Bootstrap5 as HB
 import URI.Host.IPv6Address (IPv6Address)
-import URI.Host.IPv6Address as IPv6Address
 import Web.Clipboard (Clipboard)
 import Web.Clipboard as Clipboard
 import Web.HTML (window)
