@@ -1,23 +1,21 @@
 {-
  https://github.com/ak1211/smartmeter-route-b-app
  Copyright (c) 2023 Akihiro Yamamoto.
- Licensed under the MIT License.
- See LICENSE file in the project root for full license information.
+ SPDX-License-Identifier: MIT
+ SPDX-FileCopyrightText: 2023 Akihiro Yamamoto <github.com/ak1211>
 -}
-module Bp35a1
+module ProtocolStack.SkStackUart
   ( Address64(..)
-  , EPANDESC(..)
-  , ER(..)
-  , ERXUDP(..)
-  , EVENT(..)
-  , IpV6Address(..)
-  , RSSI(..)
-  , Responce(..)
+  , Epandesc(..)
+  , Er(..)
+  , Erxudp(..)
+  , Event(..)
+  , Rssi(..)
+  , Response(..)
   , toStringEvent
-  , parseResponce
-  , parseResponce'
-  , makeRSSIfromLQI
-  , toStringIpV6Address
+  , parseResponse
+  , parseResponse'
+  , makeRssifromLqi
   ) where
 
 import Prelude
@@ -28,7 +26,7 @@ import Data.Either (Either)
 import Data.Generic.Rep (class Generic)
 import Data.Int as Int
 import Data.Maybe (Maybe(..), maybe)
-import Data.Newtype (class Newtype, unwrap)
+import Data.Newtype (class Newtype)
 import Data.Show.Generic (genericShow)
 import Data.String (joinWith)
 import Data.String as String
@@ -40,42 +38,31 @@ import Parsing as P
 import Parsing.Combinators as PC
 import Parsing.String as PS
 import Parsing.Token as PT
+import URI.Host.IPv6Address (IPv6Address)
+import URI.Host.IPv6Address as IPv6Address
 import Web.Encoding.TextDecoder as TextDecoder
 import Web.Encoding.TextEncoder as TextEncoder
 import Web.Encoding.UtfLabel as UtfLabel
 
-newtype ER
-  = ER Int
+newtype Er
+  = Er Int
 
-derive instance newtypeER :: Newtype ER _
+derive instance newtypeEr :: Newtype Er _
 
-derive instance eqER :: Eq ER
+derive instance eqEr :: Eq Er
 
-instance showER :: Show ER where
-  show (ER 0x01) = "ER01: reserved"
-  show (ER 0x02) = "ER02: reserved"
-  show (ER 0x03) = "ER03: reserved"
-  show (ER 0x04) = "ER04: 指定されたコマンドがサポートされていない"
-  show (ER 0x05) = "ER05: 指定されたコマンドの引数の数が正しくない"
-  show (ER 0x06) = "ER06: 指定されたコマンドの引数形式や値域が正しくない"
-  show (ER 0x07) = "ER07: reserved"
-  show (ER 0x08) = "ER08: reserved"
-  show (ER 0x09) = "ER09: UART入力エラーが発生した"
-  show (ER 0x10) = "ER10: 指定されたコマンドは受け付けたが、実行結果が失敗した"
-  show (ER c) = "ER" <> Int.toStringAs Int.hexadecimal c
-
-newtype IpV6Address
-  = IpV6Address String
-
-derive instance newtypeIpV6Address :: Newtype IpV6Address _
-
-derive instance eqIpV6Address :: Eq IpV6Address
-
-instance showIpV6Address :: Show IpV6Address where
-  show (IpV6Address s) = s
-
-toStringIpV6Address :: IpV6Address -> String
-toStringIpV6Address = unwrap
+instance showEr :: Show Er where
+  show (Er 0x01) = "ER01: reserved"
+  show (Er 0x02) = "ER02: reserved"
+  show (Er 0x03) = "ER03: reserved"
+  show (Er 0x04) = "ER04: 指定されたコマンドがサポートされていない"
+  show (Er 0x05) = "ER05: 指定されたコマンドの引数の数が正しくない"
+  show (Er 0x06) = "ER06: 指定されたコマンドの引数形式や値域が正しくない"
+  show (Er 0x07) = "ER07: reserved"
+  show (Er 0x08) = "ER08: reserved"
+  show (Er 0x09) = "ER09: UART入力エラーが発生した"
+  show (Er 0x10) = "ER10: 指定されたコマンドは受け付けたが、実行結果が失敗した"
+  show (Er c) = "ER" <> Int.toStringAs Int.hexadecimal c
 
 newtype Address64
   = Address64 String
@@ -87,14 +74,14 @@ derive instance eqAddress64 :: Eq Address64
 instance showAddress64 :: Show Address64 where
   show (Address64 s) = s
 
-newtype EVENT
-  = EVENT { num :: Int, sender :: IpV6Address, param :: Maybe Int }
+newtype Event
+  = Event { num :: Int, sender :: IPv6Address, param :: Maybe Int }
 
-derive instance newtypeEVENT :: Newtype EVENT _
+derive instance newtypeEvent :: Newtype Event _
 
-derive instance eqEVENT :: Eq EVENT
+derive instance eqEvent :: Eq Event
 
-instance showEVENT :: Show EVENT where
+instance showEvent :: Show Event where
   show ev =
     let
       s = toStringEvent ev
@@ -106,8 +93,8 @@ instance showEVENT :: Show EVENT where
             , maybe [] (\a -> [ "param: " <> a ]) s.param
             ]
 
-toStringEvent :: EVENT -> { message :: String, sender :: String, param :: Maybe String }
-toStringEvent (EVENT ev) =
+toStringEvent :: Event -> { message :: String, sender :: String, param :: Maybe String }
+toStringEvent (Event ev) =
   { message: eventnum ev.num
   , sender: show ev.sender
   , param: param ev.num <$> ev.param
@@ -139,23 +126,23 @@ toStringEvent (EVENT ev) =
     | n == 0x21 && p == 2 = "UDP を送信する代わりにアドレス要請（Neighbor Solicitation）を行ったことを表します。"
     | otherwise = Int.toStringAs Int.hexadecimal p
 
-newtype RSSI
-  = RSSI Number
+newtype Rssi
+  = Rssi Number
 
-derive instance newtypeRSSI :: Newtype RSSI _
+derive instance newtypeRssi :: Newtype Rssi _
 
-derive instance eqRSSI :: Eq RSSI
+derive instance eqRssi :: Eq Rssi
 
-derive instance genericRSSI :: Generic RSSI _
+derive instance genericRssi :: Generic Rssi _
 
-instance showRSSI :: Show RSSI where
+instance showRssi :: Show Rssi where
   show = genericShow
 
-makeRSSIfromLQI :: UInt -> RSSI
-makeRSSIfromLQI x = RSSI (0.275 * (UInt.toNumber x) - 104.27)
+makeRssifromLqi :: UInt -> Rssi
+makeRssifromLqi x = Rssi (0.275 * (UInt.toNumber x) - 104.27)
 
-newtype EPANDESC
-  = EPANDESC
+newtype Epandesc
+  = Epandesc
   { channel :: String
   , channelPage :: String
   , panId :: String
@@ -164,12 +151,12 @@ newtype EPANDESC
   , pairId :: String
   }
 
-derive instance newtypeEPANDESC :: Newtype EPANDESC _
+derive instance newtypeEpandesc :: Newtype Epandesc _
 
-derive instance eqEPANDESC :: Eq EPANDESC
+derive instance eqEpandesc :: Eq Epandesc
 
-instance showEPANDESC :: Show EPANDESC where
-  show (EPANDESC e) =
+instance showEpandesc :: Show Epandesc where
+  show (Epandesc e) =
     joinWith " "
       [ "EPANDESC"
       , show e.channel
@@ -180,10 +167,10 @@ instance showEPANDESC :: Show EPANDESC where
       , show e.pairId
       ]
 
-newtype ERXUDP
-  = ERXUDP
-  { sender :: IpV6Address
-  , dest :: IpV6Address
+newtype Erxudp
+  = Erxudp
+  { sender :: IPv6Address
+  , dest :: IPv6Address
   , rport :: Int
   , lport :: Int
   , senderlla :: Address64
@@ -192,12 +179,12 @@ newtype ERXUDP
   , payload :: Array UInt
   }
 
-derive instance newtypeERXUDP :: Newtype ERXUDP _
+derive instance newtypeErxudp :: Newtype Erxudp _
 
-derive instance eqERXUDP :: Eq ERXUDP
+derive instance eqErxudp :: Eq Erxudp
 
-instance showERXUDP :: Show ERXUDP where
-  show (ERXUDP e) =
+instance showErxudp :: Show Erxudp where
+  show (Erxudp e) =
     joinWith " "
       [ "ERXUDP"
       , show e.sender
@@ -210,30 +197,30 @@ instance showERXUDP :: Show ERXUDP where
       , show e.payload
       ]
 
-data Responce
+data Response
   = ResLocalEcho String
   | ResOK
-  | ResFAIL ER
-  | ResIpV6Address IpV6Address
-  | ResEVENT EVENT
-  | ResEPANDESC EPANDESC
-  | ResERXUDP ERXUDP
+  | ResFAIL Er
+  | ResIpv6Address IPv6Address
+  | ResEVENT Event
+  | ResEPANDESC Epandesc
+  | ResERXUDP Erxudp
   | ResMessage String
 
-derive instance eqResponce :: Eq Responce
+derive instance eqResponse :: Eq Response
 
-derive instance genericResponce :: Generic Responce _
+derive instance genericResponse :: Generic Response _
 
-instance showResponce :: Show Responce where
+instance showResponse :: Show Response where
   show = genericShow
 
-parseResponce ::
+parseResponse ::
   forall m.
   MonadEffect m =>
   Maybe String ->
   Uint8Array ->
-  m (Either P.ParseError { responce :: Responce, rest :: Array Char })
-parseResponce lastSendCommand input = do
+  m (Either P.ParseError { response :: Response, rest :: Array Char })
+parseResponse lastSendCommand input = do
   decoder <- liftEffect $ TextDecoder.new UtfLabel.utf8
   string <- liftEffect $ TextDecoder.decode input decoder
   pure $ go string
@@ -246,7 +233,7 @@ parseResponce lastSendCommand input = do
         <|> tokenErxudp
         <|> tokenEvent
         <|> tokenEpandesc
-        <|> ((\a _ c -> { responce: ResIpV6Address a, rest: toCharArray c }) <$> ipv6addr <*> tokenCrLf <*> PS.rest)
+        <|> ((\a _ c -> { response: ResIpv6Address a, rest: toCharArray c }) <$> ipv6addr <*> tokenCrLf <*> PS.rest)
         <|> tokenOneLine
         <|> P.fail "err"
     where
@@ -267,7 +254,7 @@ parseResponce lastSendCommand input = do
       a8 <- PS.char ':' *> twoOctets
       let
         strings = map fromCharArray [ a1, a2, a3, a4, a5, a6, a7, a8 ]
-      pure $ IpV6Address $ String.joinWith ":" strings
+      pure $ IPv6Address.unsafeFromString $ String.joinWith ":" strings
       where
       twoOctets = do
         a <- PT.hexDigit
@@ -286,27 +273,27 @@ parseResponce lastSendCommand input = do
       cs <- Array.many PT.alphaNum
       tokenCrLf
       rest <- PS.rest
-      pure { responce: ResMessage $ fromCharArray cs, rest: toCharArray rest }
+      pure { response: ResMessage $ fromCharArray cs, rest: toCharArray rest }
 
     tokenLocalEcho = do
       str <- P.liftMaybe (\_ -> "this is not echo reply") lastSendCommand
       _ <- PS.string str
       tokenCrLf
       rest <- PS.rest
-      pure { responce: ResLocalEcho str, rest: toCharArray rest }
+      pure { response: ResLocalEcho str, rest: toCharArray rest }
 
     tokenOk = do
       _ <- PS.string "OK"
       tokenCrLf
       rest <- PS.rest
-      pure { responce: ResOK, rest: toCharArray rest }
+      pure { response: ResOK, rest: toCharArray rest }
 
     tokenFail = do
       _ <- PS.string "FAIL ER"
       n <- hexadecimalDigit
       tokenCrLf
       rest <- PS.rest
-      pure { responce: ResFAIL $ ER n, rest: toCharArray rest }
+      pure { response: ResFAIL $ Er n, rest: toCharArray rest }
 
     tokenEvent = do
       _ <- PS.string "EVENT"
@@ -318,7 +305,7 @@ parseResponce lastSendCommand input = do
       param <- PC.optionMaybe $ hexadecimalDigit
       tokenCrLf
       rest <- PS.rest
-      pure { responce: ResEVENT $ EVENT { num: n, sender: addr, param: param }, rest: toCharArray rest }
+      pure { response: ResEVENT $ Event { num: n, sender: addr, param: param }, rest: toCharArray rest }
 
     tokenEpandesc = do
       _ <- PS.string "EPANDESC"
@@ -343,9 +330,9 @@ parseResponce lastSendCommand input = do
       tokenCrLf
       rest <- PS.rest
       pure
-        { responce:
+        { response:
             ResEPANDESC
-              $ EPANDESC
+              $ Epandesc
                   { channel: fromCharArray channel
                   , channelPage: fromCharArray channelPage
                   , panId: fromCharArray panId
@@ -376,9 +363,9 @@ parseResponce lastSendCommand input = do
       payload <- Array.many octet
       rest <- PS.rest
       pure
-        { responce:
+        { response:
             ResERXUDP
-              $ ERXUDP
+              $ Erxudp
                   { sender: sender
                   , dest: dest
                   , rport: rport
@@ -398,12 +385,12 @@ parseResponce lastSendCommand input = do
           Nothing -> P.fail "value is not numeric"
           Just x -> pure x
 
-parseResponce' ::
+parseResponse' ::
   forall m.
   MonadEffect m =>
   Maybe String ->
   String ->
-  m (Either P.ParseError { responce :: Responce, rest :: Array Char })
-parseResponce' lastSendCommand input = do
+  m (Either P.ParseError { response :: Response, rest :: Array Char })
+parseResponse' lastSendCommand input = do
   encoder <- liftEffect $ TextEncoder.new
-  parseResponce lastSendCommand $ TextEncoder.encode input encoder
+  parseResponse lastSendCommand $ TextEncoder.encode input encoder

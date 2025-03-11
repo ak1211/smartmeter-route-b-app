@@ -5,28 +5,29 @@
  See LICENSE file in the project root for full license information.
 -}
 module EchonetLite
-  ( EOJ(..)
-  , TID(..)
-  , Frame
-  , EDatum
+  ( EDatum
+  , EOJ(..)
   , ESV(..)
-  , Responce(..)
+  , Frame
   , Property(..)
+  , Responce(..)
   , SmartWhmProperty(..)
-  , stringWithZeroPadding
+  , TID(..)
   , getOPC
   , getPDC
+  , makeEOJ
+  , makeESV
+  , makeSmartWhmProperty
+  , makeTID
+  , parseEchonetLiteFrame
+  , serializeEchonetLiteFrame
+  , stringWithZeroPadding
   , toBigEndiannessEOJ
   , toBigEndiannessTID
-  , makeEOJ
   , toStringEOJ
-  , makeTID
   , toStringTID
-  , makeESV
-  , parseEchonetLiteFrame
-  , toUIntESV
-  , makeSmartWhmProperty
   , toStringWhmProperty
+  , toUIntESV
   ) where
 
 import Prelude
@@ -35,7 +36,8 @@ import Control.Monad.Rec.Class (class MonadRec)
 import Data.Array as Array
 import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Array.NonEmpty as NonEmptyArray
-import Data.ArrayBuffer.Types (DataView)
+import Data.ArrayBuffer.Builder as Builder
+import Data.ArrayBuffer.Types (ArrayBuffer, DataView)
 import Data.DateTime (DateTime(..), Time(..))
 import Data.DateTime as DateTime
 import Data.Either (Either)
@@ -45,17 +47,19 @@ import Data.Generic.Rep (class Generic)
 import Data.Int as Int
 import Data.List (fromFoldable)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
-import Data.Newtype (class Newtype)
+import Data.Newtype (class Newtype, unwrap)
 import Data.Number.Format as F
 import Data.Show.Generic (genericShow)
 import Data.String (joinWith)
 import Data.String as String
+import Data.Traversable (traverse_)
 import Data.Tuple (Tuple(..))
 import Data.Tuple.Nested (Tuple3)
 import Data.Tuple.Nested as TN
 import Data.UInt (UInt)
 import Data.UInt as UInt
 import Data.Unfoldable1 (unfoldr1)
+import Effect (Effect)
 import Effect.Class (class MonadEffect)
 import Parsing as P
 import Parsing.Combinators ((<?>))
@@ -596,3 +600,21 @@ toArrayArray n = unfoldr1 chop
 
   toMaybe :: Array a -> Maybe (Array a)
   toMaybe = map NonEmptyArray.toArray <<< NonEmptyArray.fromArray
+
+serializeEchonetLiteFrame ∷ Frame -> Effect ArrayBuffer
+serializeEchonetLiteFrame frame =
+  Builder.execPut do
+    Builder.putUint8 frame.ehd1 -- 1 byte
+    Builder.putUint8 frame.ehd2 -- 1 byte
+    Builder.putUint16be $ unwrap frame.tid -- 2 bytes
+    traverse_ (Builder.putUint8) $ toBigEndiannessEOJ frame.seoj -- 3 bytes
+    traverse_ (Builder.putUint8) $ toBigEndiannessEOJ frame.deoj -- 3 bytes
+    Builder.putUint8 $ toUIntESV frame.esv -- 1 byte
+    Builder.putUint8 $ getOPC frame -- 1 byte
+    traverse_ putEData frame.edata
+  where
+  putEData :: forall m. MonadEffect m => EDatum -> Builder.PutM m Unit
+  putEData datum = do
+    Builder.putUint8 datum.epc -- 1 byte
+    Builder.putUint8 $ getPDC datum -- 1 byte
+    traverse_ Builder.putUint8 datum.edt -- any

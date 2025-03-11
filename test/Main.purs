@@ -4,8 +4,6 @@ module Test.Main
   ) where
 
 import Prelude
-import Bp35a1 (ERXUDP(..), Responce(..))
-import Bp35a1 as Bp35a1
 import Data.ArrayBuffer.Builder (putUint8)
 import Data.ArrayBuffer.Builder as Builder
 import Data.ArrayBuffer.DataView as DataView
@@ -15,12 +13,14 @@ import Data.Maybe (Maybe(..))
 import EchonetLite as EchonetLite
 import Effect (Effect)
 import Effect.Class.Console (logShow)
+import ProtocolStack.SkStackUart (Erxudp(..), Response(..))
+import ProtocolStack.SkStackUart as SkStackUart
 
 showProperty :: EchonetLite.Property -> Effect Unit
 showProperty p = logShow (EchonetLite.toStringWhmProperty <$> EchonetLite.makeSmartWhmProperty p)
 
-parseFrameTest :: { responce :: Responce, rest :: Array Char } -> Effect Unit
-parseFrameTest { responce: ResERXUDP (ERXUDP e), rest: _ } = do
+parseFrameTest :: { response :: Response, rest :: Array Char } -> Effect Unit
+parseFrameTest { response: ResERXUDP (Erxudp e), rest: _ } = do
   echonetliteframe <-
     Builder.execPut do
       foldM (\_ x -> putUint8 x) mempty e.payload
@@ -48,9 +48,10 @@ inputs =
   ]
 
 main :: Effect Unit
-main = traverse_ go inputs
+main = do
+  traverse_ go inputs
   where
   go x = do
-    resp <- Bp35a1.parseResponce' Nothing x
+    resp <- SkStackUart.parseResponse' Nothing x
     --    logShow resp
     either mempty parseFrameTest resp

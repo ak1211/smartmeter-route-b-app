@@ -1,68 +1,65 @@
 {-
  https://github.com/ak1211/smartmeter-route-b-app
- Copyright (c) 2023 Akihiro Yamamoto.
- Licensed under the MIT License.
- See LICENSE file in the project root for full license information.
+ SPDX-License-Identifier: MIT
+ SPDX-FileCopyrightText: 2025 Akihiro Yamamoto <github.com/ak1211>
 -}
-module Terminal
+module HexEdit
   ( Output(..)
   , Query(..)
+  , RxDataLog
+  , TxDataLog
+  , TxRxDataLog(..)
   , component
+  , initialState
   ) where
 
 import Prelude
-import Control.Alt ((<|>))
 import Control.Monad.Rec.Class (Step(..), tailRecM)
 import Data.Array as Array
-import Data.ArrayBuffer.Builder (putArrayBuffer, putUint8)
+import Data.ArrayBuffer.ArrayBuffer as ArrayBuffer
+import Data.ArrayBuffer.Builder (putArrayBuffer)
 import Data.ArrayBuffer.Builder as Builder
+import Data.ArrayBuffer.Cast as Cast
+import Data.ArrayBuffer.DataView as DV
 import Data.ArrayBuffer.Typed as ArrayBufferTyped
 import Data.ArrayBuffer.Types (ArrayBuffer, Uint8Array)
 import Data.Char as Char
 import Data.CodePoint.Unicode as Unicode
 import Data.DateTime.Instant (Instant)
+import Data.DateTime.Instant as Instant
 import Data.Either (Either(..))
-import Data.Enum as Enum
-import Data.Foldable (foldM)
 import Data.Int as Int
-import Data.List (List, (:))
-import Data.List as List
 import Data.Maybe (Maybe(..), maybe)
 import Data.Maybe as Maybe
-import Data.MediaType (MediaType(..))
-import Data.String (CodePoint, joinWith)
-import Data.String as CodePoint
+import Data.Newtype (unwrap)
+import Data.RFC3339String as RFC3339
+import Data.String (codePointFromChar)
 import Data.String as String
-import Data.String.CodeUnits as CodeUnits
 import Data.Traversable (traverse_)
 import Data.UInt (UInt)
 import Data.UInt as UInt
-import EchonetLite (stringWithZeroPadding)
 import Effect (Effect)
 import Effect.Aff (Aff, Fiber)
 import Effect.Aff as Aff
 import Effect.Aff.Class (class MonadAff, liftAff)
 import Effect.Class (class MonadEffect, liftEffect)
-import Effect.Console (log, logShow)
+import Effect.Console (logShow)
 import Effect.Exception (Error)
 import Effect.Exception as Exc
 import Effect.Now as Now
 import Effect.Ref as EffectRef
 import Halogen as H
 import Halogen.HTML as HH
+import Halogen.HTML.Core (AttrName(..))
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Halogen.Query.HalogenM (SubscriptionId)
 import Halogen.Subscription as HS
 import Halogen.Themes.Bootstrap5 as HB
-import Parsing as P
-import Parsing.String as PString
-import Parsing.Token as PToken
-import ProtocolStack.SkStackUart as SkStackUart
-import Web.Encoding.TextDecoder as TextDecoder
-import Web.Encoding.UtfLabel as UtfLabel
-import Web.File.Blob as FB
-import Web.File.Url as FU
+import ProtocolStack.J11StackUart.Response as J11StackUart
+import ProtocolStack.J11StackUart.Command.Types (J11Command(..))
+import ProtocolStack.J11StackUart.Command.Types as CT
+import Utility as Utility
 import Web.HTML as HTML
 import Web.HTML.Window (RequestIdleCallbackId)
 import Web.HTML.Window as Window
@@ -71,26 +68,34 @@ import WebSerialApi as WebSerialApi
 data Output
   = Message { at :: Instant, message :: String }
   | MessageError { at :: Instant, error :: Error }
-  | ArraivalResponse { at :: Instant, response :: SkStackUart.Response }
+  | ArrivalResponse { at :: Instant, response :: J11StackUart.Response }
   | SerialportOpened
   | SerialportClosed
+
+type TxDataLog
+  = { at :: Instant, sendCommand :: Array UInt }
+
+type RxDataLog
+  = { at :: Instant, receiveCommand :: Array UInt }
+
+data TxRxDataLog
+  = TxDataLog TxDataLog
+  | RxDataLog RxDataLog
 
 type State
   = { maybeIdleCallbackId :: Maybe SubscriptionId
     , maybeSerialport :: Maybe WebSerialApi.SerialPort
     , maybeReadFiber :: Maybe (Fiber Unit)
-    , txHistories :: List { at :: Instant, sendText :: String }
-    , rxDataArraybuffer :: Maybe ArrayBuffer
-    , commandlineText :: String
-    , terminalText :: String
-    , saveObjectUrl :: String
+    , rxdataChunk :: ArrayBuffer
+    , txrxDataHistories :: Array TxRxDataLog
+    , hexEditLine :: Array UInt
     }
 
 data Query a
   = OpenSerialPort Int a
   | CloseSerialPort a
-  | SetCommandLineString String a
-  | SendCommand (Array UInt) a
+  | SetJ11Command J11Command a
+  | SendCommand J11Command a
   | IsOpenedSerialPort (Boolean -> a)
 
 data Action
@@ -98,9 +103,7 @@ data Action
   | Finalize
   | HandleSerialPortOpen H.SubscriptionId (Either Error WebSerialApi.SerialPort)
   | HandleSerialPortClose H.SubscriptionId (Either Error Unit)
-  | OnValueInputFormInputArea String
   | OnClickFormSendButton
-  | HandleInput (Maybe String)
   | HandleSerialPortArrivalData H.SubscriptionId WebSerialApi.ReadResult
   | HandleIdleCallback
 
@@ -124,11 +127,9 @@ initialState _ =
   { maybeIdleCallbackId: Nothing
   , maybeSerialport: Nothing
   , maybeReadFiber: Nothing
-  , txHistories: List.Nil
-  , rxDataArraybuffer: Nothing
-  , commandlineText: ""
-  , terminalText: ""
-  , saveObjectUrl: ""
+  , rxdataChunk: Utility.zeroSizeArrayBuffer
+  , txrxDataHistories: []
+  , hexEditLine: []
   }
 
 render :: forall input m. State -> H.ComponentHTML Action input m
@@ -136,8 +137,16 @@ render state =
   HH.div []
     [ HH.div [ HP.class_ HB.mb1 ] statusline
     , HH.div [ HP.classes [ HB.containerFluid ] ]
-        [ HH.div [ HP.classes [ HB.row, HB.mb1, HB.bgDark, HB.textWhite ] ] terminaltext
-        , commandline
+        [ HH.div [ HP.classes [ HB.row, HB.mb1, HB.bgDark, HB.textWhite ] ]
+            [ HH.pre [ HP.classes [ HB.col ], HP.style "max-height: 30vh" ]
+                $ Array.concatMap
+                    ( case _ of
+                        TxDataLog txd -> txDataLog txd
+                        RxDataLog rxd -> rxDataLog rxd
+                    )
+                    state.txrxDataHistories
+            ]
+        , hexEditer state.hexEditLine
         ]
     ]
   where
@@ -149,47 +158,82 @@ render state =
     [ HH.div
         [ HP.classes $ [ HB.p2, HB.border, HB.me1, HB.badge ] <> portStatus.classes ]
         [ HH.text portStatus.text ]
-    , HH.a
-        [ HP.classes
+    ]
+
+  txDataLog txd =
+    [ HH.text $ unwrap $ RFC3339.fromDateTime $ Instant.toDateTime txd.at
+    , HH.text " 送信 -> "
+    , HH.text <<< String.joinWith " " $ map (String.toUpper <<< Utility.toStringHexAs Utility.octet) txd.sendCommand
+    , HH.br_
+    ]
+
+  rxDataLog rxd =
+    [ HH.text $ unwrap $ RFC3339.fromDateTime $ Instant.toDateTime rxd.at
+    , HH.text " 受信 <- "
+    , HH.text <<< String.joinWith " " $ map (String.toUpper <<< Utility.toStringHexAs Utility.octet) rxd.receiveCommand
+    , HH.br_
+    ]
+
+hexEditer :: forall input m. Array UInt -> H.ComponentHTML Action input m
+hexEditer editline =
+  HH.div [ HP.classes [ HB.row ] ]
+    [ HH.div [ HP.classes [ HB.col ] ]
+        $ map (\x -> displayColumns x.columns)
+        $ at16bytes elemWithIndex
+    , HH.button
+        [ HP.type_ HP.ButtonButton
+        , HP.classes [ HB.col1, HB.btn, HB.btnPrimary ]
+        , HE.onClick $ const OnClickFormSendButton
+        , HP.enabled $ not (Array.null editline)
+        ]
+        [ HH.text "送信" ]
+    ]
+  where
+  elemWithIndex :: Array { index :: Int, elem :: UInt }
+  elemWithIndex = Utility.elemWithIndex editline
+
+  at16bytes :: Array { index :: Int, elem :: UInt } -> Array { columns :: Array { index :: Int, elem :: UInt } }
+  at16bytes = map { columns: _ } <<< Utility.toArrayArray 16
+
+  displayColumns :: forall w i. Array { index :: Int, elem :: UInt } -> HH.HTML w i
+  displayColumns array =
+    let
+      address = maybe 0 _.index $ Array.head array
+
+      addressText = [ HH.text $ String.toUpper $ Utility.toStringHexAs Utility.dword $ UInt.fromInt address ]
+
+      splitted = Array.splitAt 8 array
+    in
+      HH.div [ HP.classes [ HB.row, HB.rowCols3 ] ]
+        [ HH.span [ HP.classes [ HB.col2, HB.fontMonospace, HB.textPrimary ] ] addressText
+        , HH.span [ HP.classes [ HB.col7, HB.fontMonospace ] ]
             $ Array.concat
-                [ [ HB.btn
-                  , HB.btnSm
-                  , HB.btnOutlineDark
-                  ]
-                , if state.terminalText == "" then [ HB.disabled ] else []
+                [ map displaySingleByte splitted.before
+                , [ HH.span [ HP.classes [ HB.mx1 ] ] [ HH.text "" ] ]
+                , map displaySingleByte splitted.after
                 ]
-        , HP.href state.saveObjectUrl
-        , HP.target "_blank"
-        , HP.download "terminal.log"
+        , HH.span [ HP.classes [ HB.col3, HB.fontMonospace ] ] $ map displaySingleChar array
         ]
-        [ HH.text "保存" ]
-    ]
 
-  terminaltext =
-    [ HH.pre
-        [ HP.classes [ HB.col ]
-        , HP.style "max-height: 30vh"
-        ]
-        [ HH.text $ if state.terminalText == "" then " " else state.terminalText ]
-    ]
-
-  commandline =
-    HH.div [ HP.classes [ HB.row ] ]
-      [ HH.input
-          [ HP.classes [ HB.col, HB.me1, HB.formControl ]
-          , HP.type_ HP.InputText
-          , HP.placeholder "input here..."
-          , HE.onValueInput (\ev -> OnValueInputFormInputArea ev)
-          , HP.value state.commandlineText
-          ]
-      , HH.button
-          [ HP.type_ HP.ButtonButton
-          , HP.classes [ HB.col1, HB.btn, HB.btnPrimary ]
-          , HE.onClick $ const OnClickFormSendButton
-          , HP.enabled $ not (String.null state.commandlineText)
-          ]
-          [ HH.text "送信" ]
+  displaySingleByte :: forall w i. { index :: Int, elem :: UInt } -> HH.HTML w i
+  displaySingleByte byte =
+    HH.span
+      [ HP.id $ "index#" <> Int.toStringAs Int.decimal byte.index
+      , HP.classes [ HB.m1, HB.fontMonospace ]
+      , contenteditable "false"
       ]
+      [ HH.text $ String.toUpper $ Utility.toStringHexAs Utility.octet byte.elem ]
+
+  displaySingleChar :: forall w i. { index :: Int, elem :: UInt } -> HH.HTML w i
+  displaySingleChar byte =
+    HH.span [ HP.classes [ HB.m0, HB.fontMonospace, HB.textPrimary ] ]
+      [ HH.text $ printChar byte.elem ]
+
+  printChar :: UInt -> String
+  printChar x = case codePointFromChar <$> (Char.fromCharCode $ UInt.toInt x) of
+    Just codepoint
+      | Unicode.isPrint codepoint -> String.singleton codepoint
+    _ -> "."
 
 handleAction :: forall input m. MonadAff m => Action -> H.HalogenM State Action input Output m Unit
 handleAction = case _ of
@@ -202,7 +246,7 @@ handleAction = case _ of
     maybe mempty (H.liftAff <<< Aff.killFiber (Exc.error "kill to read loop fiber")) st.maybeReadFiber
     maybe mempty (H.liftAff <<< WebSerialApi.forgetPort) st.maybeSerialport
   HandleSerialPortOpen sid (Left err) -> do
-    H.liftEffect $ log ("port open error:" <> show err)
+    H.liftEffect $ logShow ("port open error:" <> show err)
     now <- H.liftEffect $ Now.now
     H.raise $ MessageError { at: now, error: err }
     H.raise SerialportClosed
@@ -214,10 +258,10 @@ handleAction = case _ of
     H.raise SerialportOpened
     fiber <- runReadSerialPortThread serialport
     H.modify_ _ { maybeReadFiber = Just fiber }
-    H.liftEffect $ log "start serial port reader thread"
+    H.liftEffect $ logShow "start serial port reader thread"
     H.unsubscribe sid
   HandleSerialPortClose sid (Left err) -> do
-    H.liftEffect $ logShow (err)
+    H.liftEffect $ logShow $ "HandleSerialPortClose" <> show err
     H.modify_ _ { maybeSerialport = Nothing }
     now <- H.liftEffect $ Now.now
     H.raise $ MessageError { at: now, error: err }
@@ -229,30 +273,19 @@ handleAction = case _ of
     H.raise $ Message { at: now, message: "シリアルポートを閉じました" }
     H.raise SerialportClosed
     H.unsubscribe sid
-  OnValueInputFormInputArea inputText -> H.modify_ _ { commandlineText = inputText }
   OnClickFormSendButton -> do
     now <- H.liftEffect $ Now.now
     (st :: State) <- H.get
     case st.maybeSerialport of
       Nothing -> H.raise $ MessageError { at: now, error: Exc.error "シリアルポートが閉じています。" }
-      Just serialport -> case encodeToUIntArrayFromAsciiCodes (st.commandlineText <> "\r\n") of
-        Left err -> do
-          H.liftEffect $ log ("PARSE ERROR " <> P.parseErrorMessage err)
-          H.raise $ MessageError { at: now, error: Exc.error ("不正な文字があります: " <> P.parseErrorMessage err) }
-        Right encodedcommand -> do
-          let
-            text = decodeToStringFromArrayUInt encodedcommand
-          H.liftEffect $ log ("SEND: " <> show encodedcommand)
-          H.liftEffect $ log ("SEND: " <> Maybe.fromMaybe "" text)
-          H.liftEffect $ writeBinaryToSerialPort serialport encodedcommand
-          let
-            newHistories = { at: now, sendText: st.commandlineText } : st.txHistories
-          H.modify_ _ { commandlineText = "", txHistories = newHistories }
-  HandleInput Nothing -> mempty
-  HandleInput (Just newText) -> do
-    currentText <- H.gets _.commandlineText
-    when (currentText /= newText)
-      $ H.modify_ _ { commandlineText = newText }
+      Just serialport -> do
+        (sendJ11Command :: J11Command) <- H.liftEffect $ (CT.makeJ11Command <=< ArrayBufferTyped.fromArray) st.hexEditLine
+        H.liftEffect $ writeJ11CommandToSerialPort serialport sendJ11Command
+        let
+          txDataLog = TxDataLog { at: now, sendCommand: st.hexEditLine }
+
+          newTxrxDataHistories = Array.snoc st.txrxDataHistories txDataLog
+        H.modify_ _ { hexEditLine = [], txrxDataHistories = newTxrxDataHistories }
   HandleSerialPortArrivalData sid WebSerialApi.Closed -> do
     now <- H.liftEffect $ Now.now
     H.raise $ MessageError { at: now, error: Exc.error "シリアルポートが閉じています。" }
@@ -261,62 +294,39 @@ handleAction = case _ of
     maybe mempty (H.liftAff <<< Aff.killFiber (Exc.error "kill to read loop fiber")) maybeReadFiber
     H.modify_ _ { maybeReadFiber = Nothing }
   HandleSerialPortArrivalData _ (WebSerialApi.Chunk chunk) -> do
-    rxDataArraybuffer <- H.gets _.rxDataArraybuffer
-    newBuf <-
+    thisRxd <- H.gets _.rxdataChunk
+    newRxd <-
       H.liftEffect
         $ Builder.execPut do
-            maybe mempty putArrayBuffer rxDataArraybuffer
-            putArrayBuffer (ArrayBufferTyped.buffer chunk)
-    H.modify_ _ { rxDataArraybuffer = Just newBuf }
+            putArrayBuffer thisRxd
+            putArrayBuffer $ ArrayBufferTyped.buffer chunk
+    H.modify_ _ { rxdataChunk = newRxd }
   HandleIdleCallback -> handleIdleCallback
 
 handleIdleCallback :: forall input m. MonadEffect m => H.HalogenM State Action input Output m Unit
 handleIdleCallback = do
-  rxDataArraybuffer <- H.gets _.rxDataArraybuffer
-  case rxDataArraybuffer of
-    Nothing -> mempty
-    Just arraybuf -> do
-      txHistories <- H.gets _.txHistories
+  rxdChunk <- H.gets _.rxdataChunk
+  -- 受信バイナリをパースする
+  rxdResult <- H.liftEffect $ J11StackUart.parseReceiveData (DV.whole rxdChunk)
+  case rxdResult of
+    Left _ -> mempty
+    Right result -> do
+      -- パーサーで消費した分
+      parsed <- H.liftEffect $ DV.part rxdChunk 0 result.positionIndex
       let
-        latestSendText = _.sendText <$> List.head txHistories
+        -- パーサーで消費した残り
+        newChunk = ArrayBuffer.slice result.positionIndex (ArrayBuffer.byteLength rxdChunk) rxdChunk
+      -- パーサーで消費した分を取り除いた断片を次回の処理に回す
+      H.modify_ _ { rxdataChunk = newChunk }
+      response <- H.liftEffect $ J11StackUart.fromJ11ResponseCommandFormat result.responseCommandFormat
+      now <- H.liftEffect $ Now.now
+      H.raise $ ArrivalResponse { at: now, response: response }
       --
-      buf <- H.liftEffect $ ArrayBufferTyped.whole arraybuf
-      resp <- SkStackUart.parseResponse latestSendText buf
-      case resp of
-        Right a -> do
-          now <- H.liftEffect $ Now.now
-          H.raise $ ArraivalResponse { at: now, response: a.response }
-        Left _ -> mempty
-      --
-      maybeLine <- H.liftEffect $ splitSingleLine buf
-      case maybeLine of
-        Nothing -> mempty
-        Just { line: line, remains: remains } -> do
-          H.modify_ _ { rxDataArraybuffer = Just $ ArrayBufferTyped.buffer remains }
-          --
-          decoder <- H.liftEffect $ TextDecoder.new UtfLabel.utf8
-          string <- H.liftEffect $ TextDecoder.decode line decoder
-          terminalText <- H.gets _.terminalText
-          H.modify_ _ { terminalText = terminalText <> string }
-          H.liftEffect $ logShow string
-      --
-      terminalText <- H.gets _.terminalText
+      receiveCommand <- H.liftEffect (ArrayBufferTyped.toArray =<< Cast.toUint8Array parsed)
       let
-        blob = FB.fromString terminalText (MediaType "text/plain")
-      saveObjectUrl <- H.liftEffect $ FU.createObjectURL blob
-      H.modify_ _ { saveObjectUrl = saveObjectUrl }
-
-splitSingleLine :: Uint8Array -> Effect (Maybe { line :: Uint8Array, remains :: Uint8Array })
-splitSingleLine buf =
-  ArrayBufferTyped.findIndex (\c _ -> c == linefeed) buf
-    >>= case _ of
-        Nothing -> pure Nothing
-        Just pos -> do
-          line <- ArrayBufferTyped.slice 0 (pos + 1) buf
-          remains <- ArrayBufferTyped.slice (pos + 1) (ArrayBufferTyped.byteLength buf) buf
-          pure $ Just { line: line, remains: remains }
-  where
-  linefeed = UInt.fromInt 0x0a
+        rxDataLog = RxDataLog { at: now, receiveCommand: receiveCommand }
+      (st :: State) <- H.get
+      H.modify_ _ { txrxDataHistories = Array.snoc st.txrxDataHistories rxDataLog }
 
 handleQuery :: forall input m a. MonadAff m => Query a -> H.HalogenM State Action input Output m (Maybe a)
 handleQuery = case _ of
@@ -327,26 +337,22 @@ handleQuery = case _ of
   CloseSerialPort next -> do
     closeSerialPort
     pure (Just next)
-  SetCommandLineString newText next -> do
-    currentText <- H.gets _.commandlineText
-    when (currentText /= newText)
-      $ H.modify_ _ { commandlineText = newText }
+  SetJ11Command j11command next -> do
+    currentHexEditLine <- H.gets _.hexEditLine
+    let
+      newHexEditLine = unwrap j11command
+    when (currentHexEditLine /= newHexEditLine)
+      $ H.modify_ _ { hexEditLine = newHexEditLine }
     pure (Just next)
-  SendCommand array next ->
+  SendCommand command next ->
     let
       fail = do
         now <- H.liftEffect $ Now.now
         H.raise $ MessageError { at: now, error: Exc.error "シリアルポートが閉じています。" }
 
-      go serialport = H.liftEffect $ writeBinaryToSerialPort serialport array
-
-      text = show array
-
-      text' = Maybe.fromMaybe "" $ decodeToStringFromArrayUInt array
+      go serialport = H.liftEffect $ writeJ11CommandToSerialPort serialport command
     in
       do
-        H.liftEffect $ log ("SENDCOMMAND: " <> text)
-        H.liftEffect $ log ("SENDCOMMAND: " <> text')
         maybe fail go =<< H.gets _.maybeSerialport
         pure (Just next)
   IsOpenedSerialPort k -> do
@@ -405,62 +411,13 @@ runReadSerialPortThread serialport = do
         WebSerialApi.Closed -> pure (Done unit)
         WebSerialApi.Chunk _ -> pure (Loop unit)
 
-decodeToStringFromArrayUInt :: Array UInt -> Maybe String
-decodeToStringFromArrayUInt input = do
-  cs <- toCodePoints input
-  Just (joinWith "" $ map mapping cs)
-  where
-  toCodePoints :: Array UInt -> Maybe (Array CodePoint)
-  toCodePoints xs =
-    let
-      maybeChars :: Array (Maybe Char)
-      maybeChars = map (Char.fromCharCode <<< UInt.toInt) xs
-    in
-      if Array.all Maybe.isJust maybeChars then
-        Just (map String.codePointFromChar $ Array.catMaybes maybeChars)
-      else
-        Nothing
-
-  mapping :: CodePoint -> String
-  mapping c
-    | c == CodePoint.codePointFromChar '\r' = "\\r"
-    | c == CodePoint.codePointFromChar '\n' = "\\n"
-    | Unicode.isAscii c && Unicode.isPrint c = String.singleton c
-    | otherwise =
-      let
-        n = Enum.fromEnum c
-      in
-        "\\x" <> stringWithZeroPadding 2 (Int.toStringAs Int.hexadecimal n)
-
-encodeToUIntArrayFromAsciiCodes :: String -> Either P.ParseError (Array UInt)
-encodeToUIntArrayFromAsciiCodes input =
-  P.runParser input do
-    as <- Array.many (hexedCode <|> anyCharacter)
-    pure as
-  where
-  anyCharacter :: forall m. P.ParserT String m UInt
-  anyCharacter = do
-    c <- PString.anyChar
-    pure (UInt.fromInt $ Char.toCharCode c)
-
-  hexedCode :: forall m. P.ParserT String m UInt
-  hexedCode = do
-    hexed <- (PString.string "\\\\x" <|> PString.string "\\x") *> Array.many PToken.hexDigit
-    let
-      cs :: String
-      cs = CodeUnits.fromCharArray hexed
-
-      maybeUI :: Maybe UInt
-      maybeUI = UInt.fromInt <$> Int.fromStringAs Int.hexadecimal cs
-    maybe (P.fail "code conversion failed.") pure maybeUI
-
-writeBinaryToSerialPort :: WebSerialApi.SerialPort -> Array UInt -> Effect Unit
-writeBinaryToSerialPort serialport array =
-  toUint8Array array
-    >>= writeUint8ArrayToSerialPort serialport
-  where
-  toUint8Array :: Array UInt -> Effect Uint8Array
-  toUint8Array = ArrayBufferTyped.whole <=< createArrayBuffer
+writeJ11CommandToSerialPort :: WebSerialApi.SerialPort -> J11Command -> Effect Unit
+writeJ11CommandToSerialPort serialport (J11Command command) = do
+  arraybuffer <-
+    Builder.execPut do
+      traverse_ Builder.putUint8 command
+  u8array <- Cast.toUint8Array $ DV.whole arraybuffer
+  writeUint8ArrayToSerialPort serialport u8array
 
 writeUint8ArrayToSerialPort :: WebSerialApi.SerialPort -> Uint8Array -> Effect Unit
 writeUint8ArrayToSerialPort serialport array = do
@@ -469,11 +426,6 @@ writeUint8ArrayToSerialPort serialport array = do
     toRelease :: Aff Unit
     toRelease = liftEffect $ WebSerialApi.releaseLockWriter writer
   Aff.launchAff_ $ Aff.finally toRelease $ WebSerialApi.write writer array
-
-createArrayBuffer :: Array UInt -> Effect ArrayBuffer
-createArrayBuffer array =
-  Builder.execPut do
-    foldM (\_ x -> putUint8 x) mempty array
 
 emitRequestIdleCallback :: Action -> HS.Emitter Action
 emitRequestIdleCallback val = HS.makeEmitter go
@@ -493,3 +445,6 @@ emitRequestIdleCallback val = HS.makeEmitter go
   cancel callbackId = do
     window <- HTML.window
     Window.cancelIdleCallback callbackId window
+
+contenteditable :: forall r i. String -> HP.IProp r i
+contenteditable = HP.attr (AttrName "contenteditable")
