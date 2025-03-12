@@ -187,17 +187,7 @@ render state =
         ]
     --
     , HH.h2_ [ HH.text "BP35C0-J11と会話してみる" ]
-    , HH.p_
-        [ HH.text "コマンド仕様は\"BP35C0-J11 UART IF 仕様書\"で検索。"
-        , HH.br_
-        , HH.p_
-            [ HH.text "まあ、"
-            , HH.a
-                [ HP.href "https://github.com/Interested-In-Spresense/BP35C0-J11/blob/eb826b025090e90b05dfe8a328253dd58ad2e378/documents/BP35C0-J11(Wi-SUN%20Enhanced%20HAN)/J11_UART_IF%E3%82%B3%E3%83%9E%E3%83%B3%E3%83%89%E4%BB%95%E6%A7%98%E6%9B%B8_%E7%AC%AC1.1%E7%89%88.pdf" ]
-                [ HH.text "これ" ]
-            , HH.text "なんですが。"
-            ]
-        ]
+    , HH.p_ [ HH.text "コマンド仕様は\"BP35C0-J11 UART IF 仕様書\"で検索。" ]
     , HH.h5_ [ HH.text "前提条件" ]
     , HH.p_
         [ HH.text "「2 UART IFコマンド」に書いてある内容。"
