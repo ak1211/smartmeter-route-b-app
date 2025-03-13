@@ -54,6 +54,7 @@ to generate this file without the comments in this block.
   , "unicode"
   , "uri"
   , "web-clipboard"
+  , "web-dom"
   , "web-encoding"
   , "web-file"
   , "web-html"

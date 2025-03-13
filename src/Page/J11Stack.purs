@@ -186,6 +186,12 @@ render state =
             [ HH.text "シリアルポートを閉じる" ]
         ]
     --
+    , HH.p_
+        [ HH.a [ HP.href "https://www.rohm.co.jp/products/wireless-communication/specified-low-power-radio-modules/bp35c0-j11-product" ]
+            [ HH.text "ROHM社BP35C0-J11ページ" ]
+        , HH.text "にあるドキュメント「BP35C0-J11 UART IF 仕様書」と「BP35C0-J11 Ｂルート通信について」を参照してください。"
+        ]
+    --
     , HH.h2_ [ HH.text "BP35C0-J11と会話してみる" ]
     , HH.p_ [ HH.text "コマンド仕様は\"BP35C0-J11 UART IF 仕様書\"で検索。" ]
     , HH.h5_ [ HH.text "前提条件" ]

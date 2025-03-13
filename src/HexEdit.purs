@@ -31,6 +31,7 @@ import Data.Either (Either(..))
 import Data.Int as Int
 import Data.Maybe (Maybe(..), maybe)
 import Data.Maybe as Maybe
+import Data.MediaType (MediaType(..))
 import Data.Newtype (unwrap)
 import Data.RFC3339String as RFC3339
 import Data.String (codePointFromChar)
@@ -56,11 +57,18 @@ import Halogen.HTML.Properties as HP
 import Halogen.Query.HalogenM (SubscriptionId)
 import Halogen.Subscription as HS
 import Halogen.Themes.Bootstrap5 as HB
-import ProtocolStack.J11StackUart.Response as J11StackUart
 import ProtocolStack.J11StackUart.Command.Types (J11Command(..))
 import ProtocolStack.J11StackUart.Command.Types as CT
+import ProtocolStack.J11StackUart.Response as J11StackUart
 import Utility as Utility
+import Web.DOM.Document as Document
+import Web.File.Blob as Blob
+import Web.File.Url as Url
 import Web.HTML as HTML
+import Web.HTML.HTMLAnchorElement as HTMLAnchorElement
+import Web.HTML.HTMLDocument as HTMLDocument
+import Web.HTML.HTMLElement as HTMLElement
+import Web.HTML.HTMLHyperlinkElementUtils as HTMLHyperlinkElementUtils
 import Web.HTML.Window (RequestIdleCallbackId)
 import Web.HTML.Window as Window
 import WebSerialApi as WebSerialApi
@@ -104,6 +112,7 @@ data Action
   | HandleSerialPortOpen H.SubscriptionId (Either Error WebSerialApi.SerialPort)
   | HandleSerialPortClose H.SubscriptionId (Either Error Unit)
   | OnClickFormSendButton
+  | OnClickSaveCommandLog
   | HandleSerialPortArrivalData H.SubscriptionId WebSerialApi.ReadResult
   | HandleIdleCallback
 
@@ -135,14 +144,14 @@ initialState _ =
 render :: forall input m. State -> H.ComponentHTML Action input m
 render state =
   HH.div []
-    [ HH.div [ HP.class_ HB.mb1 ] statusline
+    [ statusline
     , HH.div [ HP.classes [ HB.containerFluid ] ]
         [ HH.div [ HP.classes [ HB.row, HB.mb1, HB.bgDark, HB.textWhite ] ]
             [ HH.pre [ HP.classes [ HB.col ], HP.style "max-height: 30vh" ]
                 $ Array.concatMap
                     ( case _ of
-                        TxDataLog txd -> txDataLog txd
-                        RxDataLog rxd -> rxDataLog rxd
+                        TxDataLog txd -> [ HH.text $ toStringTxDataLog txd, HH.br_ ]
+                        RxDataLog rxd -> [ HH.text $ toStringRxDataLog rxd, HH.br_ ]
                     )
                     state.txrxDataHistories
             ]
@@ -155,23 +164,34 @@ render state =
     false -> { classes: [ HB.bgDark, HB.textWarning ], text: "PORT CLOSED" }
 
   statusline =
-    [ HH.div
-        [ HP.classes $ [ HB.p2, HB.border, HB.me1, HB.badge ] <> portStatus.classes ]
-        [ HH.text portStatus.text ]
+    HH.div [ HP.class_ HB.mb1 ]
+      [ HH.div
+          [ HP.classes $ [ HB.p2, HB.border, HB.me1, HB.badge ] <> portStatus.classes ]
+          [ HH.text portStatus.text ]
+      , HH.button
+          [ HP.type_ HP.ButtonButton
+          , HP.classes [ HB.btn, HB.btnSm, HB.btnOutlineDark ]
+          , HE.onClick $ const OnClickSaveCommandLog
+          ]
+          [ HH.text "保存" ]
+      ]
+
+toStringTxDataLog :: TxDataLog -> String
+toStringTxDataLog txd =
+  String.joinWith " "
+    [ unwrap $ RFC3339.fromDateTime $ Instant.toDateTime txd.at
+    , "送信 ->"
+    , String.joinWith " "
+        $ map (String.toUpper <<< Utility.toStringHexAs Utility.octet) txd.sendCommand
     ]
 
-  txDataLog txd =
-    [ HH.text $ unwrap $ RFC3339.fromDateTime $ Instant.toDateTime txd.at
-    , HH.text " 送信 -> "
-    , HH.text <<< String.joinWith " " $ map (String.toUpper <<< Utility.toStringHexAs Utility.octet) txd.sendCommand
-    , HH.br_
-    ]
-
-  rxDataLog rxd =
-    [ HH.text $ unwrap $ RFC3339.fromDateTime $ Instant.toDateTime rxd.at
-    , HH.text " 受信 <- "
-    , HH.text <<< String.joinWith " " $ map (String.toUpper <<< Utility.toStringHexAs Utility.octet) rxd.receiveCommand
-    , HH.br_
+toStringRxDataLog :: RxDataLog -> String
+toStringRxDataLog rxd =
+  String.joinWith " "
+    [ unwrap $ RFC3339.fromDateTime $ Instant.toDateTime rxd.at
+    , "受信 <-"
+    , String.joinWith " "
+        $ map (String.toUpper <<< Utility.toStringHexAs Utility.octet) rxd.receiveCommand
     ]
 
 hexEditer :: forall input m. Array UInt -> H.ComponentHTML Action input m
@@ -286,6 +306,31 @@ handleAction = case _ of
 
           newTxrxDataHistories = Array.snoc st.txrxDataHistories txDataLog
         H.modify_ _ { hexEditLine = [], txrxDataHistories = newTxrxDataHistories }
+  OnClickSaveCommandLog -> do
+    txrxDataHistories <- H.gets _.txrxDataHistories
+    let
+      strCommandLog =
+        String.joinWith "\n"
+          $ map case _ of
+              TxDataLog txd -> toStringTxDataLog txd
+              RxDataLog rxd -> toStringRxDataLog rxd
+          $ txrxDataHistories
+
+      blob = Blob.fromString strCommandLog (MediaType "text/plain")
+    blobUrl <- H.liftEffect $ Url.createObjectURL blob
+    htmlDocument <- H.liftEffect $ Window.document =<< HTML.window
+    maybeAnchorElement <-
+      H.liftEffect
+        $ HTMLAnchorElement.fromElement
+        <$> Document.createElement "a" (HTMLDocument.toDocument htmlDocument)
+    case maybeAnchorElement of
+      Nothing -> mempty
+      Just element ->
+        H.liftEffect do
+          HTMLHyperlinkElementUtils.setHref blobUrl (HTMLAnchorElement.toHTMLHyperlinkElementUtils element)
+          HTMLAnchorElement.setTarget "_blank" element
+          HTMLAnchorElement.setDownload "txrxdata.log" element
+          HTMLElement.click (HTMLAnchorElement.toHTMLElement element)
   HandleSerialPortArrivalData sid WebSerialApi.Closed -> do
     now <- H.liftEffect $ Now.now
     H.raise $ MessageError { at: now, error: Exc.error "シリアルポートが閉じています。" }
